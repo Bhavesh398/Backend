@@ -1,0 +1,18 @@
+{
+  "last_sync": "2025-11-23T19:34:51.928135",
+  "tables": {
+    "satellites": {
+      "record_count": 13304,
+      "last_sync": "2025-11-23T19:34:49.683175"
+    },
+    "debris": {
+      "record_count": 2571,
+      "last_sync": "2025-11-23T19:34:51.928135"
+    },
+    "collision_events": {
+      "record_count": 9,
+      "last_sync": "2025-11-23T19:32:25.419695"
+    }
+  },
+  "supabase_status": "online"
+}

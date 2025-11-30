@@ -1,0 +1,12 @@
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+supabase==2.3.4
+pydantic==2.5.3
+pydantic-settings==2.1.0
+python-dotenv==1.0.0
+# httpx constrained to <0.26 for supabase 2.3.4 compatibility
+httpx==0.25.2
+python-multipart==0.0.6
+numpy>=1.26.4
+fpdf==1.7.2
+google-generativeai==0.8.5
