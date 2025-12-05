@@ -25,6 +25,8 @@ class Settings(BaseSettings):
         "http://localhost:3000",
         "http://localhost:5173",
         "http://localhost:8000",
+        "https://frontend-lilac-seven-27.vercel.app",
+        "https://*.vercel.app",
     ]
     
     # Supabase
