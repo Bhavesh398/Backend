@@ -2,7 +2,7 @@
 SpaceShield Backend - Main Application Entry Point
 FastAPI-based space traffic management system
 """
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
@@ -45,7 +45,35 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-# CORS Configuration
+# Dynamic CORS Configuration to support Vercel preview deployments
+def is_allowed_origin(origin: str) -> bool:
+    """Check if origin is allowed (supports Vercel preview URLs)"""
+    if not origin:
+        return False
+    # Allow configured origins
+    if origin in settings.CORS_ORIGINS:
+        return True
+    # Allow all Vercel preview deployments
+    if origin.endswith('.vercel.app'):
+        return True
+    return False
+
+@app.middleware("http")
+async def cors_middleware(request: Request, call_next):
+    """Custom CORS middleware to handle Vercel preview deployments"""
+    origin = request.headers.get("origin")
+    
+    response = await call_next(request)
+    
+    if origin and is_allowed_origin(origin):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+    
+    return response
+
+# Standard CORS middleware (fallback)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
