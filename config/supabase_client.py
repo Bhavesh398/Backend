@@ -1,12 +1,13 @@
 """
 Supabase Client Configuration
-Async database operations wrapper
+Uses raw httpx REST API instead of supabase SDK to avoid proxy initialization bug
 """
-from supabase import create_client, Client
+import httpx
 from config.settings import settings
 from typing import Optional, Dict, List, Any
 import time
 import logging
+import json
 from .local_cache import local_cache
 
 class SupabaseUnavailable(Exception):
@@ -17,47 +18,52 @@ logger = logging.getLogger(__name__)
 
 
 class SupabaseClient:
-    """Async wrapper for Supabase operations"""
+    """Raw httpx wrapper for Supabase REST API - avoids SDK proxy bug"""
     
     def __init__(self):
         self.url = settings.SUPABASE_URL
         self.key = settings.SUPABASE_KEY
-        self._client: Optional[Client] = None
-        self._last_error_time: Optional[float] = None
+        self._client: Optional[httpx.Client] = None
         
     def reset_client(self):
         """Reset client to force reconnection"""
+        if self._client:
+            self._client.close()
         self._client = None
         logger.info("Supabase client reset - will reconnect on next request")
         
     @property
-    def client(self) -> Client:
-        """Lazy initialization of Supabase client with retry on each access"""
-        # Always try to reconnect if client not initialized
+    def client(self) -> httpx.Client:
+        """Lazy initialization of httpx client"""
         if self._client is None:
             if not self.url or not self.key:
                 logger.warning("Supabase credentials missing – entering cache-only mode.")
                 raise SupabaseUnavailable("Supabase credentials missing")
             try:
-                # Create client without proxy parameter to avoid version compatibility issues
-                self._client = create_client(
-                    supabase_url=self.url,
-                    supabase_key=self.key
+                # Use raw httpx without any proxy parameters
+                self._client = httpx.Client(
+                    base_url=self.url,
+                    headers={
+                        "Authorization": f"Bearer {self.key}",
+                        "Content-Type": "application/json",
+                        "apikey": self.key
+                    }
                 )
-                logger.info("✅ Supabase client initialized successfully")
+                logger.info("✅ Supabase httpx client initialized successfully")
             except Exception as e:
-                logger.warning(f"❌ Supabase initialization failed: {e}. Using local cache.")
+                logger.warning(f"❌ Supabase client initialization failed: {e}. Using local cache.")
                 raise SupabaseUnavailable(f"Supabase init failed: {e}")
         return self._client
     
     async def select(self, table: str, filters: Optional[Dict] = None, limit: Optional[int] = None, columns: Optional[str] = None) -> List[Dict]:
         """
-        Select records from table with automatic pagination for unlimited queries
+        Select records from table using REST API
         
         Args:
             table: Table name
             filters: Dict of column: value filters
             limit: Maximum number of records (None = fetch all via pagination)
+            columns: Columns to select
             
         Returns:
             List of records
@@ -65,58 +71,87 @@ class SupabaseClient:
         start = time.time()
         try:
             select_cols = columns if columns else "*"
+            all_data: List[Dict] = []
             
-            # If limit is None, use pagination to fetch ALL records
             if limit is None:
-                # Full pagination: continue until a short page returned.
-                all_data: List[Dict] = []
-                page_size = 1000  # Supabase hard cap per request
+                # Paginate through all records
+                page_size = 1000
                 start_idx = 0
-                safety_cap = 50000  # absolute hard stop to avoid runaway
+                safety_cap = 50000
                 page_num = 1
+                
                 print(f"🔄 Starting pagination for table={table}")
                 while start_idx < safety_cap:
-                    end_idx = start_idx + page_size - 1
-                    query = self.client.table(table).select(select_cols).range(start_idx, end_idx)
-                    if filters:
-                        for key, value in filters.items():
-                            query = query.eq(key, value)
-                    response = query.execute()
-                    batch = response.data or []
-                    batch_len = len(batch)
-                    if batch_len == 0:
-                        print(f"✅ Pagination complete - empty batch at start={start_idx}")
+                    try:
+                        # Build query string
+                        params = {
+                            "select": select_cols,
+                            "offset": start_idx,
+                            "limit": page_size
+                        }
+                        
+                        # Add filters if provided
+                        if filters:
+                            for key, value in filters.items():
+                                params[f"{key}=eq.{value}"] = True
+                        
+                        response = self.client.get(f"/rest/v1/{table}", params=params)
+                        response.raise_for_status()
+                        batch = response.json() or []
+                        batch_len = len(batch)
+                        
+                        if batch_len == 0:
+                            print(f"✅ Pagination complete - empty batch at start={start_idx}")
+                            break
+                        
+                        all_data.extend(batch)
+                        print(f"📄 Page {page_num}: fetched {batch_len}, total={len(all_data)}")
+                        
+                        if batch_len < 1000:
+                            print(f"✅ Pagination complete - last page had {batch_len} records")
+                            break
+                        
+                        start_idx += batch_len
+                        page_num += 1
+                    except Exception as e:
+                        print(f"⚠️ Pagination error at page {page_num}: {e}")
                         break
-                    all_data.extend(batch)
-                    print(f"📄 Page {page_num}: fetched {batch_len}, total={len(all_data)}")
-                    # Supabase returns max 999 per page (not 1000). Continue if we got exactly 999.
-                    if batch_len < 999:
-                        print(f"✅ Pagination complete - last page had {batch_len} records")
-                        break
-                    start_idx += batch_len  # Use actual batch length, not page_size
-                    page_num += 1
+                
                 took_ms = int((time.time() - start) * 1000)
                 print(f"✅ Final count: {len(all_data)} records in {took_ms}ms")
-                logger.info(f"Supabase select paginated complete table={table} final_count={len(all_data)} cols={select_cols} ({took_ms}ms)")
+                logger.info(f"Supabase select complete table={table} count={len(all_data)} ({took_ms}ms)")
                 return all_data
             else:
-                # Regular query with limit
-                query = self.client.table(table).select(select_cols)
+                # Single request with limit
+                params = {
+                    "select": select_cols,
+                    "limit": limit
+                }
                 
                 if filters:
                     for key, value in filters.items():
-                        query = query.eq(key, value)
+                        params[f"{key}=eq.{value}"] = True
                 
-                query = query.limit(limit)
-                response = query.execute()
+                response = self.client.get(f"/rest/v1/{table}", params=params)
+                response.raise_for_status()
+                data = response.json() or []
+                
                 took_ms = int((time.time() - start) * 1000)
+                logger.info(f"Supabase select ok table={table} count={len(data)} ({took_ms}ms)")
+                return data
                 
-                if not response.data:
-                    logger.warning(f"Supabase select returned empty set table={table} cols={select_cols} filters={filters} limit={limit} ({took_ms}ms)")
-                    return []
-                    
-                logger.info(f"Supabase select ok table={table} count={len(response.data)} cols={select_cols} ({took_ms}ms)")
-                return response.data
+        except SupabaseUnavailable:
+            raise
+        except Exception as e:
+            logger.warning(f"❌ Supabase query failed: {e}. Falling back to cache.")
+            try:
+                cached = await local_cache.load_from_cache(table)
+                if cached:
+                    logger.info(f"Loaded {len(cached)} records from cache for {table}")
+                    return cached
+            except:
+                pass
+            return []
             
         except SupabaseUnavailable:
             # Fallback to local cache
