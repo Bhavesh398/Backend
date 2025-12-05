@@ -1,5 +1,5 @@
 """
-"""Cache Manager for Supabase Data Persistence
+Cache Manager for Supabase Data Persistence
 
 This module handles automatic caching of all Supabase tables to JSON files.
 When Supabase is online, it fetches and caches data.
