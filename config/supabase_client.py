@@ -2,24 +2,6 @@
 Supabase Client Configuration
 Async database operations wrapper
 """
-import sys
-import inspect
-
-# Patch httpx.AsyncClient to remove proxy parameter before supabase imports it
-try:
-    import httpx
-    _original_async_client = httpx.AsyncClient
-    
-    class PatchedAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            # Remove proxy argument if present (supabase 2.3.4 bug)
-            kwargs.pop('proxy', None)
-            super().__init__(*args, **kwargs)
-    
-    httpx.AsyncClient = PatchedAsyncClient
-except Exception as e:
-    print(f"⚠️ Failed to patch httpx: {e}")
-
 from supabase import create_client, Client
 from config.settings import settings
 from typing import Optional, Dict, List, Any
