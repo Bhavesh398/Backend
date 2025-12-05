@@ -1,5 +1,5 @@
 """
-Cache Manager for Supabase Data Persistence
+"""Cache Manager for Supabase Data Persistence
 
 This module handles automatic caching of all Supabase tables to JSON files.
 When Supabase is online, it fetches and caches data.
@@ -7,6 +7,7 @@ When Supabase is offline, it loads data from cache files.
 """
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
@@ -15,7 +16,10 @@ import asyncio
 logger = logging.getLogger(__name__)
 
 CACHE_DIR = Path(__file__).parent.parent / "cache_data"
-CACHE_DIR.mkdir(exist_ok=True)
+# Don't create cache dir on Vercel (read-only filesystem)
+IS_VERCEL = os.getenv("VERCEL") == "1" or os.path.exists("/var/task")
+if not IS_VERCEL:
+    CACHE_DIR.mkdir(exist_ok=True)
 
 
 class CacheManager:
@@ -32,6 +36,9 @@ class CacheManager:
     def __init__(self):
         self.cache_dir = CACHE_DIR
         self.metadata_file = self.cache_dir / "_metadata.json"
+        self.is_vercel = IS_VERCEL
+        # In-memory cache for Vercel serverless
+        self.memory_cache: Dict[str, List[Dict]] = {}
         
     def get_cache_path(self, table: str) -> Path:
         """Get cache file path for a table"""
@@ -71,7 +78,13 @@ class CacheManager:
             logger.error(f"Error writing metadata: {e}")
     
     def save_to_cache(self, table: str, data: List[Dict]) -> bool:
-        """Save table data to JSON cache file"""
+        """Save table data to JSON cache file or memory"""
+        # Use in-memory cache on Vercel
+        if self.is_vercel:
+            self.memory_cache[table] = data
+            logger.info(f"✅ Cached {len(data)} records from {table} in memory (Vercel)")
+            return True
+        
         cache_path = self.get_cache_path(table)
         try:
             with open(cache_path, 'w') as f:
@@ -80,11 +93,19 @@ class CacheManager:
             self.update_metadata(table, len(data), "online")
             return True
         except Exception as e:
-            logger.error(f"❌ Error caching {table}: {e}")
-            return False
+            logger.warning(f"⚠️ Could not write cache file for {table} (read-only fs): {e}")
+            # Fallback to memory cache
+            self.memory_cache[table] = data
+            return True
     
     def load_from_cache(self, table: str) -> Optional[List[Dict]]:
-        """Load table data from JSON cache file"""
+        """Load table data from JSON cache file or memory"""
+        # Check memory cache first (for Vercel)
+        if table in self.memory_cache:
+            data = self.memory_cache[table]
+            logger.info(f"📦 Loaded {len(data)} records from memory cache for {table}")
+            return data
+        
         cache_path = self.get_cache_path(table)
         if not cache_path.exists():
             logger.warning(f"⚠️ No cache file found for {table}")
@@ -93,7 +114,7 @@ class CacheManager:
         try:
             with open(cache_path, 'r') as f:
                 data = json.load(f)
-            logger.info(f"📦 Loaded {len(data)} records from cache for {table}")
+            logger.info(f"📦 Loaded {len(data)} records from file cache for {table}")
             return data
         except Exception as e:
             logger.error(f"❌ Error loading cache for {table}: {e}")
